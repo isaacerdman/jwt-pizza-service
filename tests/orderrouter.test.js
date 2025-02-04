@@ -30,10 +30,6 @@ beforeAll(async () => {
     .send(franchiseeUser);
   expect(registerResponse.status).toBe(200);
 
-  const loginResponse = await request(app)
-    .put("/api/auth")
-    .send({ email: franchiseeUser.email, password: franchiseeUser.password });
-
   testUserTok = await utils.newUsersAuthToken();
 
   const franchiseResponse = await createFranchise(
