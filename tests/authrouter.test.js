@@ -1,102 +1,99 @@
 const request = require("supertest");
-const express = require("express");
-const jwt = require("jsonwebtoken");
-const { authRouter, setAuthUser } = require("../src/routes/authRouter.js");
-const { DB, Role } = require("../src/database/database.js");
-const config = require("../src/config.js");
+const app = require("../src/service");
+const utils = require("../src/routes/util.js");
 
-jest.mock("../src/database/database.js");
-jest.mock("jsonwebtoken");
+let tUser = { name: "pizza diner", email: "", password: "a" };
+let tUserTok, adUserTok, userToUpdate;
 
-const app = express();
-app.use(express.json());
-app.use(setAuthUser);
-app.use("/api/auth", authRouter);
+beforeAll(async () => {
+  tUser.email = `${utils.randomText(10)}@tests.com`;
 
-describe("Auth Router", () => {
-  let token;
-  let user;
+  const registerRes = await request(app).post("/api/auth").send(tUser);
+  tUserTok = registerRes.body.token;
+  utils.expectValidJwt(tUserTok);
 
-  beforeEach(() => {
-    user = {
-      id: 1,
-      name: "Test User",
-      email: "test@example.com",
-      roles: [{ role: Role.Admin }],
-    };
-    token = "mockToken";
-    jwt.sign.mockReturnValue(token);
-    jwt.verify.mockReturnValue(user);
+  userToUpdate = await utils.createAdminUser();
+  adUserTok = await utils.getAdminAuthToken();
+});
+
+describe("Authentication Flow", () => {
+  test("User can log in with valid credentials", async () => {
+    const loginRes = await request(app).put("/api/auth").send(tUser);
+
+    expect(loginRes.status).toBe(200);
+    utils.expectValidJwt(loginRes.body.token);
+
+    const expectedUser = { ...tUser, roles: [{ role: "diner" }] };
+    delete expectedUser.password;
+    expect(loginRes.body.user).toMatchObject(expectedUser);
   });
 
-  test("should register a new user", async () => {
-    DB.addUser.mockResolvedValue(user);
-    DB.loginUser.mockResolvedValue();
-
-    const response = await request(app).post("/api/auth").send({
-      name: "Test User",
-      email: "test@example.com",
-      password: "password123",
+  test("Login fails with incorrect credentials", async () => {
+    const loginRes = await request(app).put("/api/auth").send({
+      email: tUser.email,
+      password: "wrongpassword",
     });
 
-    expect(response.status).toBe(200);
-    expect(response.body).toHaveProperty("user");
-    expect(response.body).toHaveProperty("token", token);
+    expect(loginRes.status).toBe(404);
+    expect(loginRes.body.message).toBe("unknown user");
   });
 
-  test("should login an existing user", async () => {
-    DB.getUser.mockResolvedValue(user);
-    DB.loginUser.mockResolvedValue();
-
-    const response = await request(app)
-      .put("/api/auth")
-      .send({ email: "test@example.com", password: "password123" });
-
-    expect(response.status).toBe(200);
-    expect(response.body).toHaveProperty("user");
-    expect(response.body).toHaveProperty("token", token);
-  });
-
-  test("should logout a user", async () => {
-    DB.isLoggedIn.mockResolvedValue(true);
-    DB.logoutUser.mockResolvedValue();
-
-    const response = await request(app)
+  test("User can log out and token is invalidated", async () => {
+    const logoutRes = await request(app)
       .delete("/api/auth")
-      .set("Authorization", `Bearer ${token}`);
+      .set("Authorization", `Bearer ${tUserTok}`);
 
-    expect(response.status).toBe(200);
-    expect(response.body).toEqual({ message: "logout successful" });
-  });
+    expect(logoutRes.status).toBe(200);
+    expect(logoutRes.body.message).toBe("logout successful");
 
-  test("should update user info", async () => {
-    DB.updateUser.mockResolvedValue({ ...user, email: "updated@example.com" });
-    DB.isLoggedIn.mockResolvedValue(true);
-
-    const response = await request(app)
-      .put(`/api/auth/${user.id}`)
-      .set("Authorization", `Bearer ${token}`)
-      .send({ email: "updated@example.com", password: "newpass" });
-
-    expect(response.status).toBe(200);
-    expect(response.body.email).toBe("updated@example.com");
-  });
-
-  test("should not update user if unauthorized", async () => {
-    const anotherUser = {
-      id: 2,
-      email: "other@example.com",
-      roles: [{ role: "diner" }],
-    };
-    jwt.verify.mockReturnValue(anotherUser);
-    DB.isLoggedIn.mockResolvedValue(true);
-
-    const response = await request(app)
+    const protectedRes = await request(app)
       .put("/api/auth/1")
-      .set("Authorization", `Bearer ${token}`)
-      .send({ email: "updated@example.com", password: "newpass" });
+      .set("Authorization", `Bearer ${tUserTok}`);
 
-    expect(response.status).toBe(403);
-    expect(response.body).toEqual({ message: "unauthorized" });
+    expect(protectedRes.status).toBe(401);
+  });
+});
+
+describe("User Management", () => {
+  test("User can register successfully", async () => {
+    const newUser = {
+      name: "pizza diner tester",
+      email: `${utils.randomText()}@test.com`,
+      password: "a",
+    };
+
+    const registerRes = await request(app).post("/api/auth").send(newUser);
+
+    expect(registerRes.status).toBe(200);
+    utils.expectValidJwt(registerRes.body.token);
+
+    const expectedUser = { ...newUser, roles: [{ role: "diner" }] };
+    delete expectedUser.password;
+    expect(registerRes.body.user).toMatchObject(expectedUser);
+  });
+
+  test("Admin can update a user", async () => {
+    let newUser = utils.createUser();
+    const registerRes = await request(app).post("/api/auth").send(newUser);
+    expect(registerRes.status).toBe(200);
+
+    newUser.id = registerRes.body.user.id;
+
+    const updateRes = await request(app)
+      .put(`/api/auth/${newUser.id}`)
+      .set("Authorization", `Bearer ${adUserTok}`)
+      .send({ email: newUser.email, password: "test" });
+
+    expect(updateRes.status).toBe(200);
+  });
+
+  test("Non-admin user cannot update another user", async () => {
+    const updateRes = await request(app)
+      .put(`/api/auth/${userToUpdate.id}`)
+      .set("Authorization", `Bearer ${tUserTok}`)
+      .send({ email: "updated@test.com", password: "newpassword" });
+
+    expect(updateRes.status).toBe(401);
+    expect(updateRes.body.message).toBe("unauthorized");
   });
 });

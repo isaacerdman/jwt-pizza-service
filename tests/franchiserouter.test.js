@@ -1,82 +1,119 @@
 const request = require("supertest");
-const express = require("express");
-const franchiseRouter = require("../src/routes/franchiseRouter.js");
-const { authRouter } = require("../src/routes/authRouter.js");
-const { DB, Role } = require("../src/database/database.js");
+const app = require("../src/service");
+const { Role } = require("../src/database/database.js");
+const utils = require("../src/routes/util.js");
 
-jest.mock("../src/database/database.js");
+let adUserTok;
+let franchUserTok;
+let fId;
+let storeId;
 
-const app = express();
-app.use(express.json());
-app.use("/api/franchise", franchiseRouter);
+const franchiseeUser = {
+  name: "Franchisee User",
+  email: "franchisee@test.com",
+  password: "franchisee",
+  roles: [{ role: Role.Franchisee }],
+};
 
-const mockUser = { id: 4, isRole: (role) => role === Role.Admin };
+const createFranchise = async (franchise, authToken) => {
+  return await request(app)
+    .post("/api/franchise")
+    .set("Authorization", `Bearer ${authToken}`)
+    .send(franchise);
+};
 
-jest.mock("../src/routes/authRouter", () => ({
-  authRouter: {
-    authenticateToken: (req, res, next) => {
-      req.user = mockUser;
-      next();
+beforeAll(async () => {
+  adUserTok = await utils.getAdminAuthToken();
+  utils.expectValidJwt(adUserTok);
+
+  const registerResponse = await request(app)
+    .post("/api/auth")
+    .send(franchiseeUser);
+  expect(registerResponse.status).toBe(200);
+
+  const loginResponse = await request(app)
+    .put("/api/auth")
+    .send({ email: franchiseeUser.email, password: franchiseeUser.password });
+  franchUserTok = loginResponse.body.token;
+
+  const franchiseResponse = await createFranchise(
+    {
+      name: `Pizza Palace #${utils.randomText(5)}`,
+      admins: [{ email: franchiseeUser.email }],
     },
-  },
-}));
+    adUserTok
+  );
 
-describe("Franchise Router", () => {
-  beforeEach(() => {
-    jest.clearAllMocks();
+  expect(franchiseResponse.status).toBe(200);
+  fId = franchiseResponse.body.id;
+});
+
+describe("Franchises API", () => {
+  test("GET /api/franchise - Retrieve all franchises", async () => {
+    const response = await request(app).get("/api/franchise");
+    expect(response.status).toBe(200);
+    expect(Array.isArray(response.body)).toBe(true);
   });
 
-  test("GET /api/franchise should return franchises", async () => {
-    DB.getFranchises.mockResolvedValue([{ id: 1, name: "PizzaPocket" }]);
-    const res = await request(app).get("/api/franchise");
-    expect(res.status).toBe(200);
-    expect(res.body).toEqual([{ id: 1, name: "PizzaPocket" }]);
+  test("GET /api/franchise/:userId", async () => {
+    const response = await request(app)
+      .get(`/api/franchise/${franchiseeUser.id}`)
+      .set("Authorization", `Bearer ${franchUserTok}`);
+
+    expect(response.status).toBe(200);
+    expect(Array.isArray(response.body)).toBe(true);
   });
 
-  test("GET /api/franchise/:userId should return user franchises", async () => {
-    DB.getUserFranchises.mockResolvedValue([{ id: 2, name: "PizzaPocket" }]);
-    const res = await request(app).get("/api/franchise/4");
-    expect(res.status).toBe(200);
-    expect(res.body).toEqual([{ id: 2, name: "PizzaPocket" }]);
+  test("POST /api/franchise", async () => {
+    const response = await createFranchise(
+      { name: "Unauthorized Franchise" },
+      franchUserTok
+    );
+    expect(response.status).toBe(403);
+    expect(response.body.message).toBe("unable to create a franchise");
   });
 
-  test("POST /api/franchise should create a new franchise", async () => {
-    const newFranchise = {
-      name: "PizzaPocket",
-      admins: [{ email: "f@jwt.com" }],
-    };
-    DB.createFranchise.mockResolvedValue({ ...newFranchise, id: 1 });
-    const res = await request(app).post("/api/franchise").send(newFranchise);
-    expect(res.status).toBe(200);
-    expect(res.body).toEqual({ ...newFranchise, id: 1 });
+  test("DELETE /api/franchise/:fId", async () => {
+    const response = await request(app)
+      .delete(`/api/franchise/${fId}`)
+      .set("Authorization", `Bearer ${adUserTok}`);
+    expect(response.status).toBe(200);
+    expect(response.body.message).toBe("franchise deleted");
   });
 
-  test("DELETE /api/franchise/:franchiseId should delete a franchise", async () => {
-    const newFranchise = {
-      name: "PizzaPocket",
-      admins: [{ email: "f@jwt.com" }],
-    };
+  test("DELETE /api/franchise/:franchiseId", async () => {
+    const response = await request(app)
+      .delete(`/api/franchise/${fId}`)
+      .set("Authorization", `Bearer ${franchUserTok}`);
+    expect(response.status).toBe(403);
+    expect(response.body.message).toBe("unable to delete a franchise");
+  });
+});
 
-    DB.createFranchise.mockResolvedValue({ ...newFranchise, id: 1 });
-    let res = await request(app)
-      .post("/api/franchise")
-      .set("Authorization", "Bearer test-token")
-      .send(newFranchise);
+describe("Stores API", () => {
+  test("POST /api/franchise/:franchiseId/store", async () => {
+    const response = await request(app)
+      .post(`/api/franchise/${fId}/store`)
+      .set("Authorization", `Bearer ${franchUserTok}`)
+      .send({ name: "Downtown Store" });
 
-    expect(res.status).toBe(200);
-    expect(res.body).toEqual({ ...newFranchise, id: 1 });
+    expect(response.status).toBe(403);
+    expect(response.body.message).toBe("unable to create a store");
+  });
 
-    authRouter.authenticateToken = (req, res, next) => {
-      req.user = { id: 1, isRole: (role) => role === Role.Admin };
-      next();
-    };
+  test("DELETE /api/franchise/:franchiseId/store/:storeId", async () => {
+    const response = await request(app)
+      .delete(`/api/franchise/${fId}/store/${storeId}`)
+      .set("Authorization", `Bearer ${adUserTok}`);
+    expect(response.status).toBe(200);
+    expect(response.body.message).toBe("store deleted");
+  });
 
-    // DB.deleteFranchise.mockResolvedValue();
-    // res = await request(app)
-    //   .delete("/api/franchise/1")
-    //   .set("Authorization", "Bearer test-token");
-
-    // expect(res.status).toBe(200);
-    // expect(res.body).toEqual({ message: "franchise deleted" });
+  test("DELETE /api/franchise/:franchiseId/store/:storeId", async () => {
+    const response = await request(app)
+      .delete(`/api/franchise/${fId}/store/${storeId}`)
+      .set("Authorization", `Bearer ${franchUserTok}`);
+    expect(response.status).toBe(403);
+    expect(response.body.message).toBe("unable to delete a store");
   });
 });
