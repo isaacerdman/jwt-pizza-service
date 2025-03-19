@@ -153,6 +153,7 @@ jobs:
             metrics: {
               source: 'jwt-pizza-service',
               url: '${{ secrets.METRICS_URL }}',
+              userId: '${{ secrets.METRICS_USER_ID }}',
               apiKey: '${{ secrets.METRICS_API_KEY }}',
             },            
           };" > src/config.js
