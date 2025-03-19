@@ -1,4 +1,9 @@
-const app = require('./service.js');
+const app = require("./service.js");
+const { METRIC: Metric } = require("./metrics");
+
+setInterval(() => {
+  Metric.sendMetrics();
+}, 10000);
 
 const port = process.argv[2] || 3000;
 app.listen(port, () => {
